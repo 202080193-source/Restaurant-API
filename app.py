@@ -1,391 +1,249 @@
-from flask import Flask, request, jsonify, make_response
+from flask import Flask, request, jsonify, render_template_string, session
 from flask_bcrypt import Bcrypt
-import MySQLdb
-import MySQLdb.cursors
+from functools import wraps
 import datetime
-import os
-import xmltodict
+import jwt
+import mysql.connector
+import xml.etree.ElementTree as ET
 
-# ---------------------------
-# App setup
-# ---------------------------
+# ==================================================
+# APP SETUP
+# ==================================================
 app = Flask(__name__)
 bcrypt = Bcrypt(app)
-app.config["SECRET_KEY"] = os.environ.get("SECRET_KEY", "supersecretkey123")
 
-# ---------------------------
-# Database connection
-# ---------------------------
-DB_HOST = "localhost"
-DB_USER = "root"
-DB_PASS = "root"
-DB_NAME = "restaurant_db"  # Change to your DB name
+app.config["SECRET_KEY"] = "supersecretkey"
+app.config["JWT_EXP_HOURS"] = 2
 
-def get_db_connection():
-    return MySQLdb.connect(
-        host=DB_HOST,
-        user=DB_USER,
-        password=DB_PASS,
-        db=DB_NAME,
-        cursorclass=MySQLdb.cursors.DictCursor,
-        autocommit=False,
-        charset="utf8mb4"
+# ==================================================
+# DATABASE
+# ==================================================
+DB_CONFIG = {
+    "host": "localhost",
+    "user": "root",
+    "password": "AdventureTime514!",
+    "database": "restaurand_db"
+}
+
+def get_db():
+    return mysql.connector.connect(**DB_CONFIG)
+
+# ==================================================
+# XML HELPER
+# ==================================================
+def to_xml(data, root_name="items"):
+    root = ET.Element(root_name)
+    for row in data:
+        item = ET.SubElement(root, "item")
+        for k, v in row.items():
+            child = ET.SubElement(item, k)
+            child.text = str(v)
+    return ET.tostring(root, encoding="utf-8")
+
+# ==================================================
+# JWT DECORATOR
+# ==================================================
+def token_required(f):
+    @wraps(f)
+    def decorated(*args, **kwargs):
+        token = request.headers.get("Authorization")
+
+        if token and token.startswith("Bearer "):
+            token = token.replace("Bearer ", "")
+        else:
+            token = session.get("token")
+
+        if not token:
+            return jsonify({"error": "Token missing"}), 401
+
+        try:
+            jwt.decode(token, app.config["SECRET_KEY"], algorithms=["HS256"])
+        except:
+            return jsonify({"error": "Invalid or expired token"}), 401
+
+        return f(*args, **kwargs)
+    return decorated
+
+# ==================================================
+# AUTH
+# ==================================================
+@app.route("/register", methods=["GET", "POST"])
+def register():
+    if request.method == "GET":
+        return """
+        <h1>Register</h1>
+        <form method="POST">
+            <input name="username" required><br><br>
+            <input name="password" type="password" required><br><br>
+            <button>Register</button>
+        </form>
+        """
+
+    db = get_db()
+    cur = db.cursor(dictionary=True)
+
+    username = request.form["username"]
+    password = bcrypt.generate_password_hash(request.form["password"]).decode()
+
+    cur.execute("INSERT INTO users (username, password) VALUES (%s,%s)",
+                (username, password))
+    db.commit()
+    db.close()
+
+    return "<h3>Registered</h3><a href='/login'>Login</a>"
+
+
+@app.route("/login", methods=["GET", "POST"])
+def login():
+    if request.method == "GET":
+        return """
+        <h1>Login</h1>
+        <form method="POST">
+            <input name="username" required><br><br>
+            <input name="password" type="password" required><br><br>
+            <button>Login</button>
+        </form>
+        """
+
+    db = get_db()
+    cur = db.cursor(dictionary=True)
+
+    cur.execute("SELECT * FROM users WHERE username=%s",
+                (request.form["username"],))
+    user = cur.fetchone()
+
+    if not user or not bcrypt.check_password_hash(
+            user["password"], request.form["password"]):
+        return "<h3>Invalid credentials</h3>"
+
+    token = jwt.encode(
+        {
+            "user": user["username"],
+            "exp": datetime.datetime.utcnow() +
+                   datetime.timedelta(hours=2)
+        },
+        app.config["SECRET_KEY"],
+        algorithm="HS256"
     )
 
-def get_cursor():
-    conn = get_db_connection()
-    return conn, conn.cursor()
+    session["token"] = token
 
-# ---------------------------
-# Helper: JSON/XML response
-# ---------------------------
-def respond(data, status=200):
-    fmt = (request.args.get("format") or "json").lower()
-    if fmt == "xml":
-        xml_data = xmltodict.unparse({"response": {"item": data}}, pretty=True)
-        response = make_response(xml_data, status)
-        response.headers["Content-Type"] = "application/xml"
-        return response
-    # Default JSON
-    response = make_response(jsonify(data), status)
-    response.headers["Content-Type"] = "application/json"
-    return response
+    return "<h3>Login Success</h3><a href='/menu'>View Menu</a>"
 
-# ---------------------------
-# Menu CRUD
-# ---------------------------
-@app.route("/menu", methods=["GET", "POST"])
-def menu_collection():
-    if request.method == "GET":
-        conn, cur = get_cursor()
-        try:
-            cur.execute("SELECT menu_id, item_name, category, price FROM menu")
-            items = cur.fetchall()
-        finally:
-            cur.close()
-            conn.close()
-        return respond({"menu": items})
+# ==================================================
+# MENU
+# ==================================================
+@app.route("/menu", methods=["GET"])
+@token_required
+def menu():
+    db = get_db()
+    cur = db.cursor(dictionary=True)
 
-    data = request.json or {}
-    item_name = (data.get("item_name") or "").strip()
-    category = (data.get("category") or "").strip()
-    price = data.get("price")
+    cur.execute("SELECT * FROM menu")
+    menu = cur.fetchall()
+    db.close()
 
-    if not item_name or not category or price is None:
-        return respond({"msg": "item_name, category, and price are required"}, 400)
+    if request.args.get("format") == "xml":
+        return app.response_class(to_xml(menu, "menu"),
+                                  mimetype="application/xml")
 
-    try:
-        price = float(price)
-        if price < 0:
-            raise ValueError()
-    except Exception:
-        return respond({"msg": "price must be a positive number"}, 400)
+    html = """
+    <h1>Menu</h1>
+    {% for m in menu %}
+    <p>{{m.food_name}} - ₱{{m.price}}</p>
+    {% endfor %}
+    """
+    return render_template_string(html, menu=menu)
 
-    conn, cur = get_cursor()
-    try:
-        cur.execute("SELECT 1 FROM menu WHERE item_name=%s", (item_name,))
-        if cur.fetchone():
-            return respond({"msg": "menu item already exists"}, 409)
-        cur.execute("INSERT INTO menu (item_name, category, price) VALUES (%s, %s, %s)",
-                    (item_name, category, price))
-        conn.commit()
-        new_id = cur.lastrowid
-    finally:
-        cur.close()
-        conn.close()
-    return respond({"menu_id": new_id, "item_name": item_name, "category": category, "price": price}, 201)
-
-@app.route("/menu/<int:menu_id>", methods=["GET", "PUT", "DELETE"])
-def menu_detail(menu_id):
-    conn, cur = get_cursor()
-    try:
-        cur.execute("SELECT menu_id, item_name, category, price FROM menu WHERE menu_id=%s", (menu_id,))
-        item = cur.fetchone()
-    finally:
-        cur.close()
-        conn.close()
+# ==================================================
+# CUSTOMERS
+# ==================================================
+@app.route("/api/customers", methods=["GET", "POST"])
+@token_required
+def customers():
+    db = get_db()
+    cur = db.cursor(dictionary=True)
 
     if request.method == "GET":
-        if not item:
-            return respond({"msg": "menu item not found"}, 404)
-        return respond(item)
+        cur.execute("SELECT * FROM customers")
+        data = cur.fetchall()
+        db.close()
+        return jsonify(data)
 
-    data = request.json or {}
-    item_name = (data.get("item_name") or "").strip()
-    category = (data.get("category") or "").strip()
-    price = data.get("price")
+    data = request.get_json()
+    cur.execute(
+        "INSERT INTO customers (name, phone) VALUES (%s,%s)",
+        (data["name"], data["phone"])
+    )
+    db.commit()
+    db.close()
+    return jsonify({"message": "Customer added"}), 201
 
-    if request.method == "PUT":
-        if not item_name or not category or price is None:
-            return respond({"msg": "item_name, category, and price required"}, 400)
-        try:
-            price = float(price)
-            if price < 0:
-                raise ValueError()
-        except Exception:
-            return respond({"msg": "price must be positive number"}, 400)
-        conn, cur = get_cursor()
-        try:
-            cur.execute("UPDATE menu SET item_name=%s, category=%s, price=%s WHERE menu_id=%s",
-                        (item_name, category, price, menu_id))
-            if cur.rowcount == 0:
-                return respond({"msg": "menu item not found"}, 404)
-            conn.commit()
-        finally:
-            cur.close()
-            conn.close()
-        return respond({"menu_id": menu_id, "item_name": item_name, "category": category, "price": price})
-
-    if request.method == "DELETE":
-        conn, cur = get_cursor()
-        try:
-            cur.execute("DELETE FROM menu WHERE menu_id=%s", (menu_id,))
-            if cur.rowcount == 0:
-                return respond({"msg": "menu item not found"}, 404)
-            conn.commit()
-        finally:
-            cur.close()
-            conn.close()
-        return '', 204
-
-# ---------------------------
-# Customers CRUD
-# ---------------------------
-@app.route("/customers", methods=["GET", "POST"])
-def customers_collection():
-    if request.method == "GET":
-        conn, cur = get_cursor()
-        try:
-            cur.execute("SELECT customer_id, customer_name, phone_number, email FROM customers")
-            customers = cur.fetchall()
-        finally:
-            cur.close()
-            conn.close()
-        return respond({"customers": customers})
-
-    data = request.json or {}
-    customer_name = (data.get("customer_name") or "").strip()
-    phone_number = (data.get("phone_number") or "").strip()
-    email = (data.get("email") or "").strip()
-
-    if not customer_name or not email:
-        return respond({"msg": "customer_name and email required"}, 400)
-
-    conn, cur = get_cursor()
-    try:
-        cur.execute("SELECT 1 FROM customers WHERE email=%s", (email,))
-        if cur.fetchone():
-            return respond({"msg": "customer email already exists"}, 409)
-        cur.execute("INSERT INTO customers (customer_name, phone_number, email) VALUES (%s, %s, %s)",
-                    (customer_name, phone_number, email))
-        conn.commit()
-        new_id = cur.lastrowid
-    finally:
-        cur.close()
-        conn.close()
-    return respond({"customer_id": new_id, "customer_name": customer_name, "phone_number": phone_number, "email": email}, 201)
-
-@app.route("/customers/<int:customer_id>", methods=["GET", "PUT", "DELETE"])
-def customer_detail(customer_id):
-    conn, cur = get_cursor()
-    try:
-        cur.execute("SELECT customer_id, customer_name, phone_number, email FROM customers WHERE customer_id=%s", (customer_id,))
-        customer = cur.fetchone()
-    finally:
-        cur.close()
-        conn.close()
+# ==================================================
+# ORDERS
+# ==================================================
+@app.route("/api/orders", methods=["GET", "POST"])
+@token_required
+def orders():
+    db = get_db()
+    cur = db.cursor(dictionary=True)
 
     if request.method == "GET":
-        if not customer:
-            return respond({"msg": "customer not found"}, 404)
-        return respond(customer)
+        cur.execute("""
+            SELECT o.order_id, c.name, m.food_name, o.quantity, o.order_date
+            FROM orders o
+            JOIN customers c ON o.customer_id=c.customer_id
+            JOIN menu m ON o.menu_id=m.menu_id
+        """)
+        data = cur.fetchall()
+        db.close()
+        return jsonify(data)
 
-    data = request.json or {}
-    customer_name = (data.get("customer_name") or "").strip()
-    phone_number = (data.get("phone_number") or "").strip()
-    email = (data.get("email") or "").strip()
+    data = request.get_json()
+    cur.execute("""
+        INSERT INTO orders (customer_id, menu_id, quantity, order_date)
+        VALUES (%s,%s,%s,%s)
+    """, (
+        data["customer_id"],
+        data["menu_id"],
+        data["quantity"],
+        datetime.date.today()
+    ))
+    db.commit()
+    db.close()
+    return jsonify({"message": "Order created"}), 201
 
-    if request.method == "PUT":
-        if not customer_name or not email:
-            return respond({"msg": "customer_name and email required"}, 400)
-        conn, cur = get_cursor()
-        try:
-            cur.execute("UPDATE customers SET customer_name=%s, phone_number=%s, email=%s WHERE customer_id=%s",
-                        (customer_name, phone_number, email, customer_id))
-            if cur.rowcount == 0:
-                return respond({"msg": "customer not found"}, 404)
-            conn.commit()
-        finally:
-            cur.close()
-            conn.close()
-        return respond({"customer_id": customer_id, "customer_name": customer_name, "phone_number": phone_number, "email": email})
-
-    if request.method == "DELETE":
-        conn, cur = get_cursor()
-        try:
-            cur.execute("DELETE FROM customers WHERE customer_id=%s", (customer_id,))
-            if cur.rowcount == 0:
-                return respond({"msg": "customer not found"}, 404)
-            conn.commit()
-        finally:
-            cur.close()
-            conn.close()
-        return '', 204
-
-# ---------------------------
-# Orders CRUD
-# ---------------------------
-@app.route("/orders", methods=["GET", "POST"])
-def orders_collection():
-    if request.method == "GET":
-        conn, cur = get_cursor()
-        try:
-            cur.execute("""
-                SELECT o.order_id, c.customer_name, m.item_name, o.order_date, o.quantity
-                FROM orders o
-                JOIN customers c ON o.customer_id=c.customer_id
-                JOIN menu m ON o.menu_id=m.menu_id
-            """)
-            orders = cur.fetchall()
-        finally:
-            cur.close()
-            conn.close()
-        return respond({"orders": orders})
-
-    data = request.json or {}
-    customer_id = data.get("customer_id")
-    menu_id = data.get("menu_id")
-    order_date = data.get("order_date")
-    quantity = data.get("quantity", 1)
-
-    if not customer_id or not menu_id or not order_date:
-        return respond({"msg": "customer_id, menu_id, and order_date are required"}, 400)
-
-    try:
-        datetime.date.fromisoformat(order_date)
-        quantity = int(quantity)
-        if quantity <= 0:
-            raise ValueError()
-    except Exception:
-        return respond({"msg": "invalid order_date or quantity"}, 400)
-
-    conn, cur = get_cursor()
-    try:
-        cur.execute("INSERT INTO orders (customer_id, menu_id, order_date, quantity) VALUES (%s,%s,%s,%s)",
-                    (customer_id, menu_id, order_date, quantity))
-        conn.commit()
-        new_id = cur.lastrowid
-    finally:
-        cur.close()
-        conn.close()
-    return respond({"order_id": new_id}, 201)
-
-@app.route("/orders/<int:order_id>", methods=["GET", "PUT", "DELETE"])
-def order_detail(order_id):
-    conn, cur = get_cursor()
-    try:
-        cur.execute("SELECT * FROM orders WHERE order_id=%s", (order_id,))
-        order = cur.fetchone()
-    finally:
-        cur.close()
-        conn.close()
-
-    if request.method == "GET":
-        if not order:
-            return respond({"msg": "order not found"}, 404)
-        return respond(order)
-
-    data = request.json or {}
-    customer_id = data.get("customer_id")
-    menu_id = data.get("menu_id")
-    order_date = data.get("order_date")
-    quantity = data.get("quantity")
-
-    if request.method == "PUT":
-        fields, params = [], []
-        if customer_id: 
-            fields.append("customer_id=%s")
-            params.append(customer_id)
-        if menu_id:
-            fields.append("menu_id=%s")
-            params.append(menu_id)
-        if order_date:
-            try:
-                datetime.date.fromisoformat(order_date)
-            except Exception:
-                return respond({"msg": "order_date must be YYYY-MM-DD"}, 400)
-            fields.append("order_date=%s")
-            params.append(order_date)
-        if quantity is not None:
-            try:
-                quantity = int(quantity)
-                if quantity <= 0:
-                    raise ValueError()
-            except:
-                return respond({"msg": "quantity must be positive integer"}, 400)
-            fields.append("quantity=%s")
-            params.append(quantity)
-
-        if not fields:
-            return respond({"order_id": order_id})
-
-        params.append(order_id)
-        sql = f"UPDATE orders SET {', '.join(fields)} WHERE order_id=%s"
-        conn, cur = get_cursor()
-        try:
-            cur.execute(sql, tuple(params))
-            if cur.rowcount == 0:
-                return respond({"msg": "order not found"}, 404)
-            conn.commit()
-        finally:
-            cur.close()
-            conn.close()
-        return respond({"order_id": order_id})
-
-    if request.method == "DELETE":
-        conn, cur = get_cursor()
-        try:
-            cur.execute("DELETE FROM orders WHERE order_id=%s", (order_id,))
-            if cur.rowcount == 0:
-                return respond({"msg": "order not found"}, 404)
-            conn.commit()
-        finally:
-            cur.close()
-            conn.close()
-        return '', 204
-
-# ---------------------------
-# Search endpoint
-# ---------------------------
-@app.route("/api/search", methods=["GET", "POST"])
+# ==================================================
+# SEARCH
+# ==================================================
+@app.route("/search")
+@token_required
 def search():
-    if request.method == "POST":
-        data = request.json or {}
-        q = (data.get("q") or "").strip()
-    else:
-        q = (request.args.get("q") or "").strip()
+    q = request.args.get("q", "")
 
-    if not q:
-        return respond({"msg": "query parameter 'q' is required"}, 400)
+    db = get_db()
+    cur = db.cursor(dictionary=True)
 
-    conn, cur = get_cursor()
-    try:
-        cur.execute("SELECT menu_id, item_name, category, price FROM menu WHERE item_name LIKE %s", (f"%{q}%",))
-        results = cur.fetchall()
-    finally:
-        cur.close()
-        conn.close()
-    return respond({"results": results})
+    cur.execute("SELECT * FROM menu WHERE food_name LIKE %s",
+                (f"%{q}%",))
+    results = cur.fetchall()
+    db.close()
 
-# ---------------------------
-# Health check
-# ---------------------------
-@app.route("/", methods=["GET"])
+    return jsonify(results)
+
+# ==================================================
+# HOME
+# ==================================================
+@app.route("/")
 def index():
-    return respond({"msg": "Restaurant API running"}, 200)
+    return """
+    <h2>Restaurant API</h2>
+    <a href="/login">Login</a> |
+    <a href="/register">Register</a>
+    """
 
-# ---------------------------
-# Run app
-# ---------------------------
+# ==================================================
+# RUN
+# ==================================================
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5000, debug=True)
+    app.run(debug=True)
