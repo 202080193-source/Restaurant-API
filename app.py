@@ -1,5 +1,5 @@
 # ==================================================
-# RESTAURANT API (JSON + XML)
+# RESTAURANT API (JSON + XML) - Modern Design
 # Flask + MySQL + JWT + Session
 # ==================================================
 
@@ -34,7 +34,6 @@ def get_db():
 # ==================================================
 # DB INIT
 # ==================================================
-
 def init_db():
     db = get_db()
     cur = db.cursor()
@@ -71,7 +70,6 @@ def init_db():
 # ==================================================
 # XML + RESPONSE HELPER
 # ==================================================
-
 def to_xml(data, root_name="items"):
     root = ET.Element(root_name)
     for row in data:
@@ -80,11 +78,9 @@ def to_xml(data, root_name="items"):
             ET.SubElement(item, k).text = str(v)
     return ET.tostring(root, encoding="utf-8")
 
-
 def respond(data, root="items"):
     fmt = request.args.get("format")
     accept = request.headers.get("Accept", "")
-
     if fmt == "xml" or "application/xml" in accept:
         return app.response_class(to_xml(data, root), mimetype="application/xml")
     return jsonify(data)
@@ -92,7 +88,6 @@ def respond(data, root="items"):
 # ==================================================
 # JWT DECORATOR
 # ==================================================
-
 def token_required(f):
     @wraps(f)
     def decorated(*args, **kwargs):
@@ -111,55 +106,103 @@ def token_required(f):
     return decorated
 
 # ==================================================
+# FOOD EMOJI HELPER
+# ==================================================
+def food_emoji(name):
+    name = name.lower()
+    mapping = {
+        "pizza": "🍕",
+        "fries": "🍟",
+        "steak": "🥩",
+        "chicken": "🍗",
+        "pasta": "🍝",
+        "salad": "🥗",
+        "taco": "🌮",
+        "burger": "🍔"
+    }
+    for key in mapping:
+        if key in name:
+            return mapping[key]
+    return "🍴"
+
+# ==================================================
 # AUTH
 # ==================================================
 @app.route("/register", methods=["GET", "POST"])
 def register():
     if request.method == "GET":
         return """
-        <h1>Register</h1>
+        <html>
+        <head>
+        <style>
+            body { font-family: Arial; background:#f9f9f9; display:flex; justify-content:center; align-items:center; height:100vh; }
+            .container { background:white; padding:30px; border-radius:10px; box-shadow:0 0 10px rgba(0,0,0,0.1);}
+            input { width:100%; padding:10px; margin:10px 0; border-radius:5px; border:1px solid #ccc;}
+            button { padding:10px 20px; border:none; border-radius:5px; background:#28a745; color:white; cursor:pointer;}
+            button:hover { background:#218838;}
+        </style>
+        </head>
+        <body>
+        <div class="container">
+        <h2>📝 Register</h2>
         <form method="POST">
-            <input name="username" required><br><br>
-            <input name="password" type="password" required><br><br>
-            <button>Register</button>
-        </form>"""
-
+            <input name="username" placeholder="Username" required>
+            <input name="password" type="password" placeholder="Password" required>
+            <button>Register ✅</button>
+        </form>
+        <p>Already have an account? <a href="/login">Login 🔑</a></p>
+        </div>
+        </body>
+        </html>
+        """
     db = get_db(); cur = db.cursor(dictionary=True)
     pw = bcrypt.generate_password_hash(request.form["password"]).decode()
     cur.execute("INSERT INTO users (username,password) VALUES (%s,%s)",
                 (request.form["username"], pw))
     db.commit(); db.close()
-    return "<h3>Registered</h3><a href='/login'>Login</a>"
-
+    return "<h3>Registered ✅</h3><a href='/login'>Login 🔑</a>"
 
 @app.route("/login", methods=["GET", "POST"])
 def login():
     if request.method == "GET":
         return """
-        <h1>Login</h1>
+        <html>
+        <head>
+        <style>
+            body { font-family: Arial; background:#f9f9f9; display:flex; justify-content:center; align-items:center; height:100vh; }
+            .container { background:white; padding:30px; border-radius:10px; box-shadow:0 0 10px rgba(0,0,0,0.1);}
+            input { width:100%; padding:10px; margin:10px 0; border-radius:5px; border:1px solid #ccc;}
+            button { padding:10px 20px; border:none; border-radius:5px; background:#007bff; color:white; cursor:pointer;}
+            button:hover { background:#0069d9;}
+        </style>
+        </head>
+        <body>
+        <div class="container">
+        <h2>🔑 Login</h2>
         <form method="POST">
-            <input name="username" required><br><br>
-            <input name="password" type="password" required><br><br>
-            <button>Login</button>
-        </form>"""
-
+            <input name="username" placeholder="Username" required>
+            <input name="password" type="password" placeholder="Password" required>
+            <button>Login ✅</button>
+        </form>
+        <p>Don't have an account? <a href="/register">Register 📝</a></p>
+        </div>
+        </body>
+        </html>
+        """
     db = get_db(); cur = db.cursor(dictionary=True)
     cur.execute("SELECT * FROM users WHERE username=%s", (request.form["username"],))
     user = cur.fetchone(); db.close()
-
     if not user or not bcrypt.check_password_hash(user["password"], request.form["password"]):
-        return "<h3>Invalid credentials</h3>"
-
+        return "<h3>Invalid credentials ❌</h3>"
     token = jwt.encode({
         "user": user["username"],
         "exp": datetime.datetime.utcnow() + datetime.timedelta(hours=2)
     }, app.config["SECRET_KEY"], algorithm="HS256")
-
     session["token"] = token
-    return "<h3>Login Success</h3><a href='/menu'>View Menu</a>"
+    return "<h3>Login Success ✅</h3><a href='/menu'>View Menu 🍽️</a>"
 
 # ==================================================
-# MENU (HTML + JSON + XML)
+# MENU (CARD STYLE)
 # ==================================================
 @app.route("/menu")
 @token_required
@@ -167,150 +210,113 @@ def menu():
     db = get_db(); cur = db.cursor(dictionary=True)
     cur.execute("SELECT * FROM menu")
     data = cur.fetchall(); db.close()
-
     if request.args.get("format") or "application/json" in request.headers.get("Accept", ""):
         return respond(data, "menu")
-
     return render_template_string("""
-<h1>Menu</h1>
-<a href="/menu/add">➕ Add Item</a>
-<hr>
+<html>
+<head>
+<style>
+body { font-family: Arial; background:#f4f4f4; padding:20px; }
+h1 { text-align:center; }
+.menu-container { display:flex; flex-wrap:wrap; justify-content:center; gap:20px; }
+.card { background:white; border-radius:10px; padding:20px; width:200px; box-shadow:0 4px 8px rgba(0,0,0,0.1); text-align:center; transition: transform 0.2s;}
+.card:hover { transform: translateY(-5px); box-shadow:0 8px 16px rgba(0,0,0,0.2);}
+button { margin:5px; padding:5px 10px; border:none; border-radius:5px; cursor:pointer;}
+.edit { background:#ffc107; color:white;}
+.delete { background:#dc3545; color:white;}
+.add { background:#28a745; color:white; margin-bottom:20px; padding:10px 20px;}
+</style>
+</head>
+<body>
+<h1>🍽️ Menu</h1>
+<a href="/menu/add"><button class="add">➕ Add New Item</button></a>
+<div class="menu-container">
 {% for m in menu %}
-<p>
-<b>{{m.food_name}}</b> - ₱{{m.price}}
-<a href="/menu/edit/{{m.menu_id}}">✏ Edit</a>
+<div class="card">
+<h2>{{food_emoji(m.food_name)}} {{m.food_name}}</h2>
+<p>₱{{m.price}}</p>
+<a href="/menu/edit/{{m.menu_id}}"><button class="edit">✏️ Edit</button></a>
 <form method="POST" action="/menu/delete/{{m.menu_id}}" style="display:inline;">
-    <button onclick="return confirm('Delete item?')">🗑 Delete</button>
+<button class="delete" onclick="return confirm('Delete this item?')">🗑️ Delete</button>
 </form>
-</p>
+</div>
 {% endfor %}
-""", menu=data)
-
-
-# ==================================================
-# CUSTOMERS (JSON + XML)
-# ==================================================
-@app.route("/api/customers", methods=["GET", "POST"])
-@token_required
-def customers():
-    db = get_db(); cur = db.cursor(dictionary=True)
-
-    if request.method == "GET":
-        cur.execute("SELECT * FROM customers")
-        data = cur.fetchall(); db.close()
-        return respond(data, "customers")
-
-    data = request.get_json()
-    cur.execute("INSERT INTO customers (name,phone) VALUES (%s,%s)",
-                (data["name"], data["phone"]))
-    db.commit(); db.close()
-    return respond([{ "message": "Customer added" }])
+</div>
+</body>
+</html>
+""", menu=data, food_emoji=food_emoji)
 
 # ==================================================
-# ORDERS (JSON + XML)
-# ==================================================
-@app.route("/api/orders", methods=["GET", "POST"])
-@token_required
-def orders():
-    db = get_db(); cur = db.cursor(dictionary=True)
-
-    if request.method == "GET":
-        cur.execute("""
-        SELECT o.order_id, c.name, m.food_name, o.quantity, o.order_date
-        FROM orders o
-        JOIN customers c ON o.customer_id=c.customer_id
-        JOIN menu m ON o.menu_id=m.menu_id
-        """)
-        data = cur.fetchall(); db.close()
-        return respond(data, "orders")
-
-    data = request.get_json()
-    cur.execute("""
-        INSERT INTO orders (customer_id,menu_id,quantity,order_date)
-        VALUES (%s,%s,%s,%s)
-    """, (data["customer_id"], data["menu_id"], data["quantity"], datetime.date.today()))
-    db.commit(); db.close()
-    return respond([{ "message": "Order created" }])
-
-# ==================================================
-# SEARCH (JSON + XML)
-# ==================================================
-@app.route("/search")
-@token_required
-def search():
-    q = request.args.get("q", "")
-    db = get_db(); cur = db.cursor(dictionary=True)
-    cur.execute("SELECT * FROM menu WHERE food_name LIKE %s", (f"%{q}%",))
-    data = cur.fetchall(); db.close()
-    return respond(data, "results")
-
-#===================================================
-# CRUD IN BROWSER 
+# CRUD FOR ADD/EDIT/DELETE
 # ==================================================
 @app.route("/menu/add", methods=["GET", "POST"])
 @token_required
 def add_menu():
     if request.method == "GET":
         return """
-        <h2>Add Menu Item</h2>
-        <form method="POST">
-            <input name="food_name" placeholder="Food name" required><br><br>
-            <input name="price" type="number" step="0.01" placeholder="Price" required><br><br>
-            <button>Add</button>
-        </form>
-        <a href="/menu">Back</a>
-        """
-
-    db = get_db()
-    cur = db.cursor()
-    cur.execute(
-        "INSERT INTO menu (food_name, price) VALUES (%s,%s)",
-        (request.form["food_name"], request.form["price"])
-    )
-    db.commit()
-    db.close()
-
-    return "<h3>Menu added</h3><a href='/menu'>View Menu</a>"
+<html>
+<head>
+<style>
+body { font-family: Arial; display:flex; justify-content:center; align-items:center; height:100vh; background:#f4f4f4;}
+.container { background:white; padding:30px; border-radius:10px; box-shadow:0 0 10px rgba(0,0,0,0.1);}
+input { width:100%; padding:10px; margin:10px 0; border-radius:5px; border:1px solid #ccc;}
+button { padding:10px 20px; border:none; border-radius:5px; background:#28a745; color:white; cursor:pointer;}
+button:hover { background:#218838;}
+</style>
+</head>
+<body>
+<div class="container">
+<h2>➕ Add New Food 🍴</h2>
+<form method="POST">
+<input name="food_name" placeholder="Food name 🍕🍔🍣" required>
+<input name="price" type="number" step="0.01" placeholder="Price ₱" required>
+<button>Add ✅</button>
+</form>
+<a href="/menu">⬅️ Back to Menu</a>
+</div>
+</body>
+</html>
+"""
+    db = get_db(); cur = db.cursor()
+    cur.execute("INSERT INTO menu (food_name, price) VALUES (%s,%s)",
+                (request.form["food_name"], request.form["price"]))
+    db.commit(); db.close()
+    return "<h3>🍴 Food Added!</h3><a href='/menu'>⬅️ Back to Menu</a>"
 
 @app.route("/menu/edit/<int:id>", methods=["GET", "POST"])
 @token_required
 def edit_menu(id):
-    db = get_db()
-    cur = db.cursor(dictionary=True)
-
+    db = get_db(); cur = db.cursor(dictionary=True)
     if request.method == "GET":
         cur.execute("SELECT * FROM menu WHERE menu_id=%s", (id,))
-        item = cur.fetchone()
-        db.close()
-
+        item = cur.fetchone(); db.close()
         return f"""
-        <h2>Edit Menu</h2>
-        <form method="POST">
-            <input name="food_name" value="{item['food_name']}" required><br><br>
-            <input name="price" type="number" step="0.01" value="{item['price']}" required><br><br>
-            <button>Update</button>
-        </form>
-        """
-
-    cur.execute(
-        "UPDATE menu SET food_name=%s, price=%s WHERE menu_id=%s",
-        (request.form["food_name"], request.form["price"], id)
-    )
-    db.commit()
-    db.close()
-
-    return "<h3>Updated</h3><a href='/menu'>Back</a>"
+<html>
+<body>
+<div style='font-family:Arial;text-align:center;margin-top:50px;'>
+<h2>✏️ Edit Food 🍴</h2>
+<form method="POST">
+<input name="food_name" value="{item['food_name']}" required>
+<input name="price" type="number" step="0.01" value="{item['price']}" required>
+<button>Update ✅</button>
+</form>
+<a href='/menu'>⬅️ Back to Menu</a>
+</div>
+</body>
+</html>
+"""
+    cur.execute("UPDATE menu SET food_name=%s, price=%s WHERE menu_id=%s",
+                (request.form["food_name"], request.form["price"], id))
+    db.commit(); db.close()
+    return "<h3>✅ Food Updated!</h3><a href='/menu'>⬅️ Back to Menu</a>"
 
 @app.route("/menu/delete/<int:id>", methods=["POST"])
 @token_required
 def delete_menu(id):
-    db = get_db()
-    cur = db.cursor()
+    db = get_db(); cur = db.cursor()
     cur.execute("DELETE FROM menu WHERE menu_id=%s", (id,))
-    db.commit()
-    db.close()
-    return "<h3>Deleted</h3><a href='/menu'>Back</a>"
-
+    db.commit(); db.close()
+    return "<h3>🗑️ Food Deleted!</h3><a href='/menu'>⬅️ Back to Menu</a>"
 
 # ==================================================
 # HOME
@@ -318,10 +324,22 @@ def delete_menu(id):
 @app.route("/")
 def index():
     return """
-    <h2>Restaurant API</h2>
-    <a href='/login'>Login</a> |
-    <a href='/register'>Register</a>
-    """
+<html>
+<head>
+<style>
+body { font-family: Arial; background:#f4f4f4; text-align:center; padding-top:50px; }
+a { margin: 10px; text-decoration:none; color:white; padding:10px 20px; background:#007bff; border-radius:5px;}
+a:hover { background:#0056b3; }
+</style>
+</head>
+<body>
+<h1>🍴 Welcome to the Restaurant API 🍴</h1>
+<a href='/login'>Login 🔑</a>
+<a href='/register'>Register 📝</a>
+<p>Explore our delicious menu and order your favorite dishes! 🍔🍕🍣🍦🥗</p>
+</body>
+</html>
+"""
 
 # ==================================================
 # RUN
